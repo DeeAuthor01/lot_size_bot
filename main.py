@@ -1,107 +1,97 @@
-import os
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ConversationHandler, ContextTypes
-from dotenv import load_dotenv
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, ContextTypes,
+    MessageHandler, filters, ConversationHandler
+)
+from utils import get_pip_info
 
-load_dotenv()
-TOKEN = os.getenv("BOT_TOKEN")
-
-ACCOUNT_SIZE, RISK_DOLLAR, PAIR, ENTRY, STOP_LOSS = range(5)
-
+# Stages
+ACCOUNT, RISK, PAIR, ENTRY, SL, TP = range(6)
 user_data = {}
 
-# Dictionary of pip values
-pip_values = {
-    # Majors
-    "EURUSD": 10, "GBPUSD": 10, "USDJPY": 9.13, "USDCHF": 9.24,
-    "AUDUSD": 10, "NZDUSD": 10, "USDCAD": 7.99,
-    
-    # Minors
-    "EURGBP": 11.27, "EURJPY": 8.36, "GBPJPY": 7.72, "CHFJPY": 7.08, "EURAUD": 7.68,
-
-    # Exotics
-    "USDZAR": 6.51, "USDTRY": 6.12, "USDMXN": 5.87, "USDNOK": 5.97, "USDSEK": 5.92,
-
-    # Metals
-    "XAUUSD": 1.0, "XAGUSD": 0.5,
-}
-
-def calculate_lot_size(risk_amount, entry_price, stop_loss_price, pip_value):
-    pips = abs(entry_price - stop_loss_price)
-    if "JPY" in str(entry_price):
-        pips *= 100
-    else:
-        pips *= 10000
-    risk_per_pip = pip_value
-    lot_size = risk_amount / (pips * risk_per_pip)
-    return round(pips, 1), round(lot_size, 2)
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome to the Lot Size Calculator Bot!\n\nPlease enter your *Account Size* (in USD):", parse_mode="Markdown")
-    return ACCOUNT_SIZE
+    await update.message.reply_text("Welcome to Lot Size Calculator Bot!\n\nPlease enter your account size in USD:")
+    return ACCOUNT
 
-async def get_account_size(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_data["account_size"] = float(update.message.text)
-    await update.message.reply_text("Enter the amount you want to risk (in USD):")
-    return RISK_DOLLAR
+async def account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data["account"] = float(update.message.text)
+    await update.message.reply_text("How much do you want to risk per trade (in USD)?")
+    return RISK
 
-async def get_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data["risk"] = float(update.message.text)
-    await update.message.reply_text("Enter the Forex Pair (e.g., EURUSD, GBPJPY, USDZAR):")
+    await update.message.reply_text("Enter the pair you want to trade (e.g., EURUSD, GBPJPY, XAUUSD):")
     return PAIR
 
-async def get_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pair = update.message.text.upper()
-    if pair not in pip_values:
-        await update.message.reply_text("Unsupported pair. Please try again.")
-        return PAIR
-    user_data["pair"] = pair
-    await update.message.reply_text("Enter Entry Price:")
+async def pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data["pair"] = update.message.text.upper()
+    await update.message.reply_text("Enter your entry price:")
     return ENTRY
 
-async def get_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data["entry"] = float(update.message.text)
-    await update.message.reply_text("Enter Stop Loss Price:")
-    return STOP_LOSS
+    await update.message.reply_text("Enter your stop loss price:")
+    return SL
 
-async def get_stop_loss(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    entry = user_data["entry"]
-    sl = float(update.message.text)
-    pair = user_data["pair"]
-    risk = user_data["risk"]
-    pip_val = pip_values[pair]
+async def sl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data["sl"] = float(update.message.text)
+    await update.message.reply_text("Enter your take profit price:")
+    return TP
 
-    pips, lot = calculate_lot_size(risk, entry, sl, pip_val)
-
+async def tp(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_data["tp"] = float(update.message.text)
+    result = calculate_lot_size(user_data)
     await update.message.reply_text(
-        f"**Result:**\n\n"
-        f"Pair: {pair}\n"
-        f"Pip Size: {pips} pips\n"
-        f"Lot Size: {lot} lots\n\n"
-        f"Risk: ${risk} | Entry: {entry} | SL: {sl}",
-        parse_mode="Markdown"
+        f"Pair: {user_data['pair']}\n"
+        f"SL: {result['SL Pips']} pips\n"
+        f"Lot Size: {result['Lot Size']}\n"
+        f"RR: {result['Risk-Reward Ratio']}"
     )
     return ConversationHandler.END
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operation canceled.")
-    return ConversationHandler.END
+def calculate_lot_size(data):
+    entry = data["entry"]
+    sl = data["sl"]
+    tp = data["tp"]
+    risk = data["risk"]
+    pair = data["pair"]
+
+    pip_multiplier, pip_value = get_pip_info(pair)
+    sl_pips = abs(entry - sl) * pip_multiplier
+    if sl_pips == 0:
+        return {"SL Pips": 0, "Lot Size": 0, "Risk-Reward Ratio": 0}
+
+    lot_size = risk / (sl_pips * (pip_value / 10))
+    rr = abs(tp - entry) / abs(entry - sl)
+
+    return {
+        "SL Pips": round(sl_pips, 2),
+        "Lot Size": round(lot_size, 2),
+        "Risk-Reward Ratio": round(rr, 2)
+    }
 
 if __name__ == "__main__":
+    import os
+    from dotenv import load_dotenv
+    load_dotenv()
+
+    TOKEN = os.getenv("BOT_TOKEN")
+
     app = ApplicationBuilder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
-            ACCOUNT_SIZE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_account_size)],
-            RISK_DOLLAR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_risk)],
-            PAIR: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_pair)],
-            ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_entry)],
-            STOP_LOSS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_stop_loss)],
+            ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, account)],
+            RISK: [MessageHandler(filters.TEXT & ~filters.COMMAND, risk)],
+            PAIR: [MessageHandler(filters.TEXT & ~filters.COMMAND, pair)],
+            ENTRY: [MessageHandler(filters.TEXT & ~filters.COMMAND, entry)],
+            SL: [MessageHandler(filters.TEXT & ~filters.COMMAND, sl)],
+            TP: [MessageHandler(filters.TEXT & ~filters.COMMAND, tp)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[],
     )
 
     app.add_handler(conv_handler)
-    print("Bot running...")
+    print("Bot is running...")
     app.run_polling()
